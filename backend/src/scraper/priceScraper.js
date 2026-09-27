@@ -735,7 +735,7 @@ async function scrapeProduct(
   try {
     browser =
       await chromium.launch({
-        headless: false,
+        headless: true,
       });
 
     context =
