@@ -22,19 +22,30 @@ async function runScheduledScrape(req, res) {
       });
     }
 
-    const result = await runAllActiveTrackedProductScrapes();
+    // Start the scheduled scrape without making the external
+    // cron service wait for every Playwright scrape to finish.
+    runAllActiveTrackedProductScrapes()
+      .then((result) => {
+        const succeeded = result.results.filter(
+          (item) => item.success
+        ).length;
 
-    const succeeded = result.results.filter(
-      (item) => item.success
-    ).length;
+        const failed = result.results.length - succeeded;
 
-    const failed = result.results.length - succeeded;
+        console.log(
+          `SCHEDULED SCRAPE COMPLETE: total=${result.total}, succeeded=${succeeded}, failed=${failed}`
+        );
+      })
+      .catch((error) => {
+        console.error(
+          "SCHEDULED SCRAPE BACKGROUND ERROR:",
+          error
+        );
+      });
 
     return res.json({
-      success: failed === 0,
-      total: result.total,
-      succeeded,
-      failed,
+      success: true,
+      message: "Scheduled scrape started",
     });
   } catch (error) {
     console.error("SCHEDULED SCRAPE ERROR:", error);
