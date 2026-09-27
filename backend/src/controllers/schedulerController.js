@@ -4,8 +4,7 @@ const {
 
 async function runScheduledScrape(req, res) {
   try {
-    const configuredSecret =
-      process.env.SCHEDULER_SECRET;
+    const configuredSecret = process.env.SCHEDULER_SECRET;
 
     if (!configuredSecret) {
       return res.status(500).json({
@@ -14,33 +13,33 @@ async function runScheduledScrape(req, res) {
       });
     }
 
-    const providedSecret =
-      req.headers["x-scheduler-secret"];
+    const providedSecret = req.headers["x-scheduler-secret"];
 
-    if (
-      !providedSecret ||
-      providedSecret !== configuredSecret
-    ) {
+    if (!providedSecret || providedSecret !== configuredSecret) {
       return res.status(401).json({
         success: false,
         error: "Unauthorized scheduler request",
       });
     }
 
-    const result =
-      await runAllActiveTrackedProductScrapes();
+    const result = await runAllActiveTrackedProductScrapes();
 
-    res.json({
-      success: true,
-      data: result,
+    const succeeded = result.results.filter(
+      (item) => item.success
+    ).length;
+
+    const failed = result.results.length - succeeded;
+
+    return res.json({
+      success: failed === 0,
+      total: result.total,
+      succeeded,
+      failed,
     });
   } catch (error) {
-    console.error(
-      "SCHEDULED SCRAPE ERROR:",
-      error
-    );
+    console.error("SCHEDULED SCRAPE ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: error.message,
     });
