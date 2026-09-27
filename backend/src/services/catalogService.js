@@ -3,6 +3,11 @@ const { chromium } = require("playwright");
 const STORE_URL = "https://demo.inelabteamdev.com/";
 const TOTAL_CATALOG_PAGES = 48;
 
+// Keep the catalog in memory so every search does not rescan
+// all 48 storefront pages.
+let catalogCache = null;
+let catalogCachePromise = null;
+
 function extractProductIdFromSku(sku) {
   const match = String(sku || "").match(/SK-(\d+)-/i);
 
@@ -43,9 +48,98 @@ async function loadCatalogPage(page, url, pageNumber) {
   }
 }
 
+async function scanCatalog() {
+  const browser = await chromium.launch({
+    headless: true,
+  });
+
+  const page = await browser.newPage();
+  const products = [];
+
+  try {
+    for (
+      let pageNumber = 1;
+      pageNumber <= TOTAL_CATALOG_PAGES;
+      pageNumber++
+    ) {
+      const catalogUrl =
+        pageNumber === 1
+          ? STORE_URL
+          : `${STORE_URL}?page=${pageNumber}`;
+
+      console.log(
+        `Catalog cache: scanning page ${pageNumber}/${TOTAL_CATALOG_PAGES}`
+      );
+
+      await loadCatalogPage(page, catalogUrl, pageNumber);
+
+      const pageProducts = await page
+        .locator("article.card")
+        .evaluateAll((cards) =>
+          cards.map((card) => ({
+            name:
+              card.querySelector(".card-title")?.textContent?.trim() || "",
+            maker:
+              card.querySelector(".card-maker")?.textContent?.trim() || "",
+            sku:
+              card.querySelector(".card-code")?.textContent?.trim() || "",
+          }))
+        );
+
+      for (const product of pageProducts) {
+        const productId = extractProductIdFromSku(product.sku);
+
+        if (!product.name || !productId) {
+          continue;
+        }
+
+        products.push({
+          ...product,
+          productId,
+        });
+      }
+    }
+
+    return products;
+  } finally {
+    await browser.close();
+  }
+}
+
+async function getCatalog() {
+  if (catalogCache) {
+    return catalogCache;
+  }
+
+  if (!catalogCachePromise) {
+    catalogCachePromise = scanCatalog()
+      .then((products) => {
+        const unique = new Map();
+
+        for (const product of products) {
+          if (!unique.has(product.productId)) {
+            unique.set(product.productId, product);
+          }
+        }
+
+        catalogCache = Array.from(unique.values());
+
+        console.log(
+          `Catalog cache ready: ${catalogCache.length} products`
+        );
+
+        return catalogCache;
+      })
+      .finally(() => {
+        catalogCachePromise = null;
+      });
+  }
+
+  return catalogCachePromise;
+}
+
 async function discoverProductOptions(page, productId) {
   const productUrl = `${STORE_URL}item/${productId}`;
-
   const maxAttempts = 3;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -62,7 +156,6 @@ async function discoverProductOptions(page, productId) {
       );
 
       const count = await optionButtons.count();
-
       const options = [];
 
       for (let i = 0; i < count; i++) {
@@ -110,9 +203,7 @@ async function discoverProductOptions(page, productId) {
     }
   }
 
-  throw new Error(
-    `Could not discover options for product ${productId}`
-  );
+  throw new Error(`Could not discover options for product ${productId}`);
 }
 
 async function searchCatalog(query) {
@@ -122,127 +213,44 @@ async function searchCatalog(query) {
     throw new Error("Search query is required");
   }
 
+  // Search the cached catalog instead of scanning 48 pages.
+  const catalog = await getCatalog();
+
+  const matchedProducts = catalog.filter((product) =>
+    product.name.toLowerCase().includes(searchTerm)
+  );
+
   const browser = await chromium.launch({
     headless: true,
   });
 
   const page = await browser.newPage();
-
   const matches = [];
-  const seenProductIds = new Set();
 
   try {
-    for (
-      let pageNumber = 1;
-      pageNumber <= TOTAL_CATALOG_PAGES;
-      pageNumber++
-    ) {
-      const catalogUrl =
-        pageNumber === 1
-          ? STORE_URL
-          : `${STORE_URL}?page=${pageNumber}`;
-
+    for (const product of matchedProducts) {
       console.log(
-        `Catalog search: scanning page ${pageNumber}/${TOTAL_CATALOG_PAGES}`
+        `Found: ${product.name} -> ${product.productId}`
       );
 
-      await loadCatalogPage(
-        page,
-        catalogUrl,
-        pageNumber
-      );
-
-      const products = await page
-        .locator("article.card")
-        .evaluateAll((cards) =>
-          cards.map((card) => ({
-            name:
-              card
-                .querySelector(".card-title")
-                ?.textContent
-                ?.trim() || "",
-
-            maker:
-              card
-                .querySelector(".card-maker")
-                ?.textContent
-                ?.trim() || "",
-
-            sku:
-              card
-                .querySelector(".card-code")
-                ?.textContent
-                ?.trim() || "",
-          }))
+      try {
+        const options = await discoverProductOptions(
+          page,
+          product.productId
         );
 
-      for (const product of products) {
-        if (
-          !product.name
-            .toLowerCase()
-            .includes(searchTerm)
-        ) {
-          continue;
-        }
-
-        const productId =
-          extractProductIdFromSku(product.sku);
-
-        if (!productId) {
-          console.error(
-            `Could not extract product ID from SKU for "${product.name}": ${product.sku}`
-          );
-
-          continue;
-        }
-
-        if (seenProductIds.has(productId)) {
-          console.log(
-            `Duplicate skipped: ${product.name} -> ${productId}`
-          );
-
-          continue;
-        }
-
-        console.log(
-          `Found: ${product.name} -> ${productId}`
-        );
-
-        let options;
-
-        try {
-          options = await discoverProductOptions(
-            page,
-            productId
-          );
-
-          console.log(
-            `Options for ${product.name}: ${options
-              .map(
-                (item) =>
-                  `${item.option}=${item.name}`
-              )
-              .join(", ")}`
-          );
-        } catch (error) {
-          console.error(
-            `Could not discover options for "${product.name}" (${productId}): ${error.message}`
-          );
-
-          continue;
-        }
-
-        const result = {
-          productId,
+        matches.push({
+          productId: product.productId,
           productName: product.name,
           maker: product.maker,
           sku: product.sku,
-          url: `${STORE_URL}item/${productId}`,
+          url: `${STORE_URL}item/${product.productId}`,
           options,
-        };
-
-        matches.push(result);
-        seenProductIds.add(productId);
+        });
+      } catch (error) {
+        console.error(
+          `Could not discover options for "${product.name}" (${product.productId}): ${error.message}`
+        );
       }
     }
 
