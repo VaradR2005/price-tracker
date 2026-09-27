@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 
-const API_BASE_URL = "http://localhost:5000/api";
+const API_BASE_URL = "https://price-tracker-9xp5.onrender.com/api";
 
 function App() {
   const [query, setQuery] = useState("");
