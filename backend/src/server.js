@@ -27,6 +27,6 @@ app.use("/api", scrapeQueryRoutes);
 app.use("/api", csvRoutes);
 app.use("/api", schedulerRoutes);
 app.use("/api/products", catalogRoutes);
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Price Tracker backend running on port ${PORT}`);
 });
